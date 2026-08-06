@@ -80,11 +80,17 @@ describe("worker routes", () => {
   });
 
   it("requires Basic Auth when admin token is configured", async () => {
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ data: { leftDays: "30" } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { points: "66.6" } }));
+
     const denied = await worker.fetch(new Request("https://worker.test/status"), env);
     const allowed = await worker.fetch(new Request("https://worker.test/status", { headers: { Authorization: basicAuth } }), env);
 
     expect(denied.status).toBe(401);
     expect(denied.headers.get("WWW-Authenticate")).toContain("Basic");
+    expect(fetcher).toHaveBeenCalledTimes(2);
     expect(allowed.status).not.toBe(401);
   });
 
