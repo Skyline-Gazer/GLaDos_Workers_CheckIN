@@ -15,7 +15,10 @@ type JsonBody = {
     targetTime?: string;
     status?: string;
   };
-  results?: Array<{ accountStatus?: { leftDays?: string; points?: string }; checkin?: { earnedPoints?: number } }>;
+  results?: Array<{
+    accountStatus?: { leftDays?: string; points?: string };
+    checkin?: { earnedPoints?: number; status?: string; message?: string };
+  }>;
 };
 
 const env = {
@@ -224,6 +227,62 @@ describe("worker routes", () => {
 
     expect(fetcher).toHaveBeenCalledTimes(3);
   });
+
+  it("does not write checkin log rows for status-only queries", async () => {
+    const db = createLogDb();
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ data: { leftDays: "30" } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { points: "66.6" } }));
+
+    const response = await worker.fetch(
+      new Request("https://worker.test/status", { headers: { Authorization: basicAuth } }),
+      { ...env, CHECKIN_DB: db }
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.inserts).toEqual([]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports expired cookies in status-only queries", async () => {
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }))
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }));
+
+    const response = await worker.fetch(new Request("https://worker.test/status", { headers: { Authorization: basicAuth } }), env);
+    const body = (await response.json()) as JsonBody;
+
+    expect(response.status).toBe(200);
+    expect(body.results?.[0]?.checkin?.status).toBe("expired");
+  });
+
+  it("scheduled handler retries when all accounts fail transiently and marks executed after success", async () => {
+    const db = createScheduleDb([
+      {
+        run_date: shanghaiToday(),
+        target_time: "2000-01-01T00:00:00.000Z",
+        executed_at: null,
+        created_at: "2000-01-01T00:00:00.000Z"
+      }
+    ]);
+    const ctx = { waitUntil: vi.fn(), passThroughOnException: vi.fn(), props: {} };
+    const cron = { cron: "*/30 * * * *", scheduledTime: Date.now(), type: "scheduled" };
+    const envWithDb = { ...env, CHECKIN_DB: db };
+
+    const fetcher = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ message: "server down" }, 500));
+    await worker.scheduled(cron, envWithDb, ctx);
+    expect(db.state.get(shanghaiToday())?.executed_at).toBeNull();
+
+    fetcher
+      .mockReset()
+      .mockResolvedValueOnce(jsonResponse({ code: 0, message: "Checkin! Got 1 Points" }))
+      .mockResolvedValueOnce(jsonResponse({ data: { leftDays: "10" } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { points: "99" } }));
+    await worker.scheduled(cron, envWithDb, ctx);
+    expect(db.state.get(shanghaiToday())?.executed_at).toEqual(expect.any(String));
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -244,31 +303,68 @@ function createMockDb(rows: Record<string, unknown>[] = []) {
   };
 }
 
-function createScheduleDb(): CheckinLogDatabase {
-  const rows = new Map<string, Record<string, unknown>>();
+function createScheduleDb(rows: Record<string, unknown>[] = []) {
+  const state = new Map(rows.map((row) => [String(row.run_date), { ...row }]));
   const db = {
+    state,
     prepare: vi.fn((sql: string) => ({
       bind: vi.fn((...values: unknown[]) => ({
         all: vi.fn(async () => {
           if (sql.includes("scheduled_checkins")) {
-            const row = rows.get(String(values[0]));
+            const row = state.get(String(values[0]));
             return { results: row ? [row] : [] };
           }
           return { results: [] };
         }),
         run: vi.fn(async () => {
           if (sql.includes("INSERT")) {
-            rows.set(String(values[0]), {
+            state.set(String(values[0]), {
               run_date: values[0],
               target_time: values[1],
               executed_at: null,
               created_at: values[2]
             });
           }
-          return { success: true };
+          if (sql.includes("UPDATE")) {
+            const row = state.get(String(values[1]));
+            if (row) {
+              row.executed_at = values[0];
+            }
+          }
+          return { success: true, meta: { changes: 1 } };
         })
       }))
     }))
   };
-  return db as unknown as CheckinLogDatabase;
+  return db as unknown as CheckinLogDatabase & { state: Map<string, Record<string, unknown>> };
+}
+
+function createLogDb() {
+  const inserts: unknown[][] = [];
+  const db = {
+    inserts,
+    prepare: vi.fn((sql: string) => ({
+      bind: vi.fn((...values: unknown[]) => {
+        if (sql.includes("INSERT INTO checkin_logs")) {
+          inserts.push(values);
+        }
+        return {
+          all: vi.fn().mockResolvedValue({ results: [] }),
+          run: vi.fn().mockResolvedValue({ success: true })
+        };
+      }),
+      all: vi.fn().mockResolvedValue({ results: [] }),
+      run: vi.fn().mockResolvedValue({ success: true })
+    }))
+  };
+  return db as unknown as CheckinLogDatabase & { inserts: unknown[][] };
+}
+
+function shanghaiToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
 }

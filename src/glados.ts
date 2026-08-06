@@ -27,10 +27,6 @@ export function classifyCheckinResponse(httpStatus: number, data: unknown): Acco
     return { status: "expired", message: message || `Cookie expired (HTTP ${httpStatus})`, httpStatus };
   }
 
-  if (code === 0 || lowerMessage.includes("checkin! got")) {
-    return { status: "success", message: message || "Check-in succeeded", httpStatus, earnedPoints: extractPoints(message) };
-  }
-
   if (
     lowerMessage.includes("already") ||
     lowerMessage.includes("tomorrow") ||
@@ -38,6 +34,10 @@ export function classifyCheckinResponse(httpStatus: number, data: unknown): Acco
     lowerMessage.includes("today")
   ) {
     return { status: "already_checked_in", message: message || "Already checked in", httpStatus, earnedPoints: 0 };
+  }
+
+  if (code === 0 || lowerMessage.includes("checkin! got")) {
+    return { status: "success", message: message || "Check-in succeeded", httpStatus, earnedPoints: extractPoints(message) };
   }
 
   return { status: "failed", message: message || `Unexpected response (HTTP ${httpStatus})`, httpStatus };
@@ -58,17 +58,76 @@ export async function checkAccountStatus(
   });
   const data = await readJson(response);
 
-  if (!response.ok) {
-    return { message: safeMessage(data) || `Status request failed (HTTP ${response.status})` };
-  }
-
+  const validity = classifyAccountValidity(response.status, data);
   const leftDays = extractLeftDays(data);
   const pointsInfo = await checkAccountPoints(account, fetcher);
-  if (!leftDays && !pointsInfo?.points) {
-    return { message: safeMessage(data) || "Status response did not include remaining days or points" };
+  const base = {
+    leftDays,
+    points: pointsInfo?.points,
+    exchangePlans: pointsInfo?.exchangePlans,
+    pointHistory: pointsInfo?.pointHistory
+  };
+
+  if (validity === "invalid") {
+    return {
+      ...base,
+      cookieValid: false,
+      message: safeMessage(data) || `Cookie 已失效（HTTP ${response.status}）`,
+      httpStatus: response.status
+    };
   }
 
-  return { leftDays, ...pointsInfo };
+  if (validity === "valid" || leftDays || pointsInfo?.points) {
+    return {
+      ...base,
+      cookieValid: true,
+      message: safeMessage(data) || undefined,
+      httpStatus: response.status
+    };
+  }
+
+  return {
+    ...base,
+    message: safeMessage(data) || `状态查询未返回有效数据（HTTP ${response.status}）`,
+    httpStatus: response.status
+  };
+}
+
+function classifyAccountValidity(httpStatus: number, data: unknown): "valid" | "invalid" | "unknown" {
+  if (httpStatus === 401 || httpStatus === 403 || httpStatus === 407) {
+    return "invalid";
+  }
+  const message = safeMessage(data).toLowerCase();
+  if (/(login|unauthorized|forbidden|no permission|invalid|expired)/.test(message)) {
+    return "invalid";
+  }
+  const code = extractResponseCode(data);
+  if (code !== undefined && code !== 0) {
+    return "invalid";
+  }
+  if (
+    isRecord(data) &&
+    isRecord(data.data) &&
+    (typeof data.data.leftDays === "string" || typeof data.data.leftDays === "number")
+  ) {
+    return "valid";
+  }
+  return "unknown";
+}
+
+function extractResponseCode(data: unknown): number | undefined {
+  if (!isRecord(data)) {
+    return undefined;
+  }
+  const code = data.code;
+  if (typeof code === "number") {
+    return code;
+  }
+  if (typeof code === "string") {
+    const parsed = Number.parseFloat(code);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 async function checkAccountPoints(account: AccountConfig, fetcher: Fetcher): Promise<AccountRunResult["accountStatus"] | undefined> {
@@ -129,7 +188,20 @@ export async function performAccountRun(
   };
 
   if (checkin.status === "success" || checkin.status === "already_checked_in") {
-    result.accountStatus = await checkAccountStatus(account, fetcher);
+    try {
+      const accountStatus = await checkAccountStatus(account, fetcher);
+      result.accountStatus = accountStatus;
+      if (accountStatus?.cookieValid === false && checkin.status === "success") {
+        result.checkin = {
+          ...checkin,
+          status: "expired",
+          message: accountStatus.message || "Cookie 已失效",
+          httpStatus: accountStatus.httpStatus ?? checkin.httpStatus
+        };
+      }
+    } catch (error) {
+      result.accountStatus = { message: `状态查询失败：${safeError(error)}` };
+    }
   }
 
   return result;
@@ -166,6 +238,58 @@ export async function runAccounts(
 
   await Promise.all(Array.from({ length: workerCount }, () => runNext()));
   return results;
+}
+
+export async function runAccountsStatusOnly(
+  accounts: AccountConfig[],
+  options: {
+    concurrency: number;
+    fetcher?: Fetcher;
+  }
+): Promise<AccountRunResult[]> {
+  const results: AccountRunResult[] = new Array<AccountRunResult>(accounts.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(options.concurrency, accounts.length));
+  const fetcher = options.fetcher ?? fetch;
+
+  async function runNext(): Promise<void> {
+    while (nextIndex < accounts.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const account = accounts[index];
+      if (!account) {
+        continue;
+      }
+      results[index] = await performStatusOnly(account, fetcher);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => runNext()));
+  return results;
+}
+
+async function performStatusOnly(account: AccountConfig, fetcher: Fetcher): Promise<AccountRunResult> {
+  try {
+    const accountStatus = await checkAccountStatus(account, fetcher);
+    const valid = accountStatus?.cookieValid;
+    return {
+      accountName: account.name,
+      checkin: {
+        status: valid === false ? "expired" : valid === true ? "success" : "failed",
+        message:
+          accountStatus?.message ||
+          (valid === false ? "Cookie 已失效" : valid === true ? "Cookie 有效" : "无法确认 Cookie 状态"),
+        httpStatus: accountStatus?.httpStatus,
+        earnedPoints: 0
+      },
+      accountStatus
+    };
+  } catch (error) {
+    return {
+      accountName: account.name,
+      checkin: { status: "failed", message: safeError(error) }
+    };
+  }
 }
 
 export function summarizeResults(results: AccountRunResult[]) {

@@ -34,6 +34,9 @@ export type AccountRunResult = {
     exchangePlans?: ExchangePlan[];
     pointHistory?: PointHistoryItem[];
     message?: string;
+    /** Whether the cookie is confirmed valid/invalid from the status API. undefined = unknown. */
+    cookieValid?: boolean;
+    httpStatus?: number;
   };
 };
 
@@ -91,11 +94,8 @@ export type NotificationSummary = {
 
 export type AppConfig = {
   accounts: AccountConfig[];
-  adminUser: string;
-  adminToken?: string;
   checkinConcurrency: number;
   checkinRetries: number;
-  notifyOnStatusOnly: boolean;
   notifications: NotificationChannel[];
 };
 

@@ -5,7 +5,8 @@ import {
   classifyCheckinResponse,
   extractPoints,
   performAccountRun,
-  runAccounts
+  runAccounts,
+  runAccountsStatusOnly
 } from "../src/glados";
 import type { AccountConfig } from "../src/types";
 
@@ -141,6 +142,98 @@ describe("GLaDOS account operations", () => {
     const results = await runAccounts(accounts, { concurrency: 1, retries: 1, fetcher, sleep: async () => undefined });
 
     expect(results.map((result) => result.checkin.status)).toEqual(["success", "expired"]);
+  });
+});
+
+describe("cookie validity detection", () => {
+  it("marks cookies invalid when the status API reports a login error", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }))
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }));
+
+    const status = await checkAccountStatus(account, fetcher);
+
+    expect(status?.cookieValid).toBe(false);
+    expect(status?.httpStatus).toBe(200);
+  });
+
+  it("marks cookies invalid on HTTP 403 even with an empty body", async () => {
+    const fetcher = vi.fn().mockResolvedValueOnce(jsonResponse({}, 403));
+
+    const status = await checkAccountStatus(account, fetcher);
+
+    expect(status?.cookieValid).toBe(false);
+  });
+
+  it("marks cookies valid when the status API returns left days", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { leftDays: "30" } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { points: "100" } }));
+
+    const status = await checkAccountStatus(account, fetcher);
+
+    expect(status?.cookieValid).toBe(true);
+    expect(status?.leftDays).toBe("30");
+    expect(status?.points).toBe("100");
+  });
+
+  it("downgrades a success checkin to expired when the status API says the cookie is invalid", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 0, message: "Checkin! Got 1 Points" }))
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }))
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }));
+
+    const result = await performAccountRun(account, { retries: 1, fetcher, sleep: async () => undefined });
+
+    expect(result.checkin.status).toBe("expired");
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a success checkin when the status query itself fails", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 0, message: "Checkin! Got 1 Points" }))
+      .mockRejectedValueOnce(new Error("network down"));
+
+    const result = await performAccountRun(account, { retries: 1, fetcher, sleep: async () => undefined });
+
+    expect(result.checkin.status).toBe("success");
+    expect(result.accountStatus?.message).toContain("状态查询失败");
+  });
+});
+
+describe("status-only account runs", () => {
+  it("reports expired for invalid cookies without calling the checkin API", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }))
+      .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }));
+
+    const results = await runAccountsStatusOnly([account], { concurrency: 1, fetcher });
+
+    expect(results[0]?.checkin.status).toBe("expired");
+    expect(results[0]?.checkin.message).toContain("no login");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://glados.rocks/api/user/status");
+    expect(String(fetcher.mock.calls[1]?.[0])).toBe("https://glados.rocks/api/user/points");
+  });
+
+  it("reports success for valid cookies", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ data: { leftDays: "30" } }))
+      .mockResolvedValueOnce(jsonResponse({ data: { points: "66.6" } }));
+
+    const results = await runAccountsStatusOnly([account], { concurrency: 1, fetcher });
+
+    expect(results[0]?.checkin.status).toBe("success");
+    expect(results[0]?.checkin.message).toBe("Cookie 有效");
+    expect(results[0]?.accountStatus?.leftDays).toBe("30");
+    expect(results[0]?.accountStatus?.points).toBe("66.6");
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -45,6 +45,8 @@ Cloudflare Cron（每 30 分钟唤醒一次）
 
 Worker 只使用 Cookie 模拟浏览器请求，**不存储密码、不模拟登录流程**。Cookie 过期后你需要手动更新。
 
+Worker 会额外调用 GLaDOS 状态接口来**检测 Cookie 有效性**：综合 HTTP 状态码、响应 `code`、错误消息和是否返回剩余天数，把每个账号判定为「有效 / 失效 / 无法确认」。失效 Cookie 会显示为「Cookie 失效」并触发失效通知，而不是被误判为签到成功。
+
 ## 前置准备：你需要准备什么
 
 开始之前，请确认你有以下三样东西：
@@ -351,6 +353,8 @@ https://你的Worker域名/health
 
 这样既不需要 Worker 长时间挂起，也不会固定每天同一时间打卡。实际执行时间会落在随机目标时间之后的 0-30 分钟内。
 
+如果某次签到因 GLaDOS 临时故障（HTTP 5xx/429 等）失败，Worker **不会**把当天标记为已执行，下一次 Cron 唤醒会继续重试；只有没有临时性失败（Cookie 失效视为当天终态，不会反复重试）时才把当天标记为已完成。
+
 在 Worker 首页点击 **查看日志**，即可看到 D1 中记录的签到历史，包含日期时间、账号、状态、获得 Point、剩余天数等信息。支持按年份和月份筛选。
 
 ## （可选）配置通知
@@ -404,7 +408,7 @@ https://你的Worker域名/health
 | `ADMIN_USER` | - | `admin` | Plain | 页面/API 访问用户名 |
 | `CHECKIN_CONCURRENCY` | - | `2` | Plain | 并发签到数 |
 | `CHECKIN_RETRIES` | - | `3` | Plain | 签到失败重试次数 |
-| `NOTIFY_ON_STATUS_ONLY` | - | `false` | Plain | `/status` 接口是否发通知 |
+| `NOTIFY_ON_STATUS_ONLY` | - | `false` | Plain | 为 `true` 时 `/status` 查询结果也推送通知（含 Cookie 失效提醒） |
 | `DINGTALK_WEBHOOK` | - | - | Secret | 钉钉 Webhook |
 | `DINGTALK_SECRET` | - | - | Secret | 钉钉加签密钥 |
 | `TELEGRAM_BOT_TOKEN` | - | - | Secret | Telegram Bot Token |
@@ -442,7 +446,7 @@ npm run dev
 |------|------|:--:|------|
 | `/` | GET | Basic Auth | 操作面板页面 |
 | `/health` | GET | - | 健康检查，公开访问 |
-| `/status` | GET | Basic/Bearer | 查询账号状态和剩余天数 |
+| `/status` | GET | Basic/Bearer | 仅查询账号状态并检测 Cookie 有效性（有效/失效/无法确认），不执行签到、不写入日志 |
 | `/test` | POST | Basic/Bearer | 测试签到+Cookie+通知全流程 |
 | `/checkin` | POST | Basic/Bearer | 仅签到，不发通知。加 `?notify=true` 则发送 |
 | `/run` | POST | Basic/Bearer | 签到并发送通知 |
@@ -459,6 +463,8 @@ curl -H "Authorization: Bearer 你的ADMIN_TOKEN" https://你的域名/status
 ```
 
 如果未配置 `ADMIN_TOKEN`，除 `/health` 外的受保护端点均返回 `404`。
+
+**Cookie 有效性检测**：`/status` 与签到流程都会调用 GLaDOS 状态接口，根据 HTTP 状态码（401/403 等）、响应 `code`（非 0 即失效）、错误消息（login/unauthorized/forbidden 等）以及是否返回剩余天数，综合判定 Cookie 为「有效 / 失效 / 无法确认」。`/status` 是纯查询接口：**不会触发签到，也不会向 D1 写入任何日志**。
 
 ## 排障指南
 
@@ -496,6 +502,8 @@ Worker 启动时找不到账号配置。
 通知或响应显示 Cookie 已失效。
 
 **处理**：重新登录 GLaDOS，按第二步获取新的 Cookie，更新 Cloudflare 里的 `GLADOS_ACCOUNTS`。然后可以手动触发一次 `/test` 验证新 Cookie 是否生效。
+
+也可以用 `GET /status` 快速验证：Cookie 有效时账号显示「成功 / Cookie 有效」并带出剩余天数与 Points；Cookie 失效时显示「Cookie 失效」；若状态接口无有效数据则显示「无法确认 Cookie 状态」。
 
 ### Q: Cookie 不会自动刷新
 
@@ -536,7 +544,7 @@ GlaDos_Workers_CheckIN/
 ├── src/
 │   ├── index.ts                                    # Worker 入口：路由+HTTP处理
 │   ├── config.ts                                   # 环境变量解析+配置校验
-│   ├── glados.ts                                   # GLaDOS API 调用：签到+状态查询
+│   ├── glados.ts                                   # GLaDOS API：签到+状态查询+Cookie 有效性检测
 │   ├── notify/index.ts                             # 通知模块：钉钉/Telegram/飞书
 │   ├── storage.ts                                  # D1 日志读写+HTML日志页
 │   ├── format.ts                                   # 报告文本格式化

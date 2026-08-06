@@ -1,9 +1,10 @@
 import { parseConfig } from "./config";
-import { runAccounts, summarizeResults } from "./glados";
+import { runAccounts, runAccountsStatusOnly, summarizeResults } from "./glados";
 import { sendEnabledNotifications } from "./notify";
 import { getNextScheduledCheckin, markScheduledCheckinExecuted, shouldRunScheduledCheckin } from "./schedule";
 import { buildLogHtml, listCheckinLogs, recordSuccessfulCheckins } from "./storage";
-import type { EnvLike, RunReport } from "./types";
+import type { EnvLike, RunReport, ScheduleInfo } from "./types";
+import type { ScheduleDecision } from "./schedule";
 
 type ExecutionContextLike = {
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -22,13 +23,27 @@ const worker = {
 
   async scheduled(_controller: unknown, env: EnvLike, _ctx: ExecutionContextLike): Promise<void> {
     try {
-      const decision = await shouldRunScheduledCheckin(env.CHECKIN_DB);
+      const decision = await safeScheduleDecision(env);
       if (!decision.shouldRun) {
         console.log(JSON.stringify({ event: "scheduled_skipped", reason: decision.reason, targetTime: decision.targetTime }));
         return;
       }
-      const report = await executeRun(env, "scheduled", true);
-      await markScheduledCheckinExecuted(env.CHECKIN_DB, decision.runDate, report.startedAt);
+
+      const report = await executeRun(env, "scheduled", false);
+      const terminal = report.summary.failed === 0;
+      if (terminal || report.summary.expired > 0) {
+        const config = parseConfig(env);
+        report.notifications = await sendEnabledNotifications(report, { channels: config.notifications });
+        report.notificationSummary = summarizeNotifications(config.notifications.length, report.notifications);
+        console.log(JSON.stringify({ event: "glados_run_notified", notifications: report.notifications }));
+      }
+
+      // Only mark the day executed when no transient failures remain; expired cookies are
+      // terminal for the day (retrying them only hammers the API), while failed (5xx/429)
+      // runs are retried by the next cron tick.
+      if (terminal) {
+        await markScheduledCheckinExecuted(env.CHECKIN_DB, decision.runDate, report.startedAt);
+      }
     } catch (error) {
       console.error(JSON.stringify({ event: "scheduled_failed", error: safeError(error) }));
     }
@@ -92,6 +107,15 @@ async function handleRequest(request: Request, env: EnvLike): Promise<Response> 
   return json({ ok: false, error: "Method not allowed" }, 405);
 }
 
+async function safeScheduleDecision(env: EnvLike): Promise<ScheduleDecision> {
+  try {
+    return await shouldRunScheduledCheckin(env.CHECKIN_DB);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "schedule_check_failed", error: safeError(error) }));
+    return { shouldRun: true, reason: "missing_db" };
+  }
+}
+
 async function executeRun(
   env: EnvLike,
   trigger: RunReport["trigger"],
@@ -100,22 +124,26 @@ async function executeRun(
 ): Promise<RunReport> {
   const config = parseConfig(env);
   const results = statusOnly
-    ? await runAccounts(config.accounts, {
-        concurrency: config.checkinConcurrency,
-        retries: config.checkinRetries,
-        fetcher: statusOnlyFetcher,
-        sleep: async () => undefined
+    ? await runAccountsStatusOnly(config.accounts, {
+        concurrency: config.checkinConcurrency
       })
     : await runAccounts(config.accounts, {
         concurrency: config.checkinConcurrency,
         retries: config.checkinRetries
       });
 
+  let schedule: ScheduleInfo | undefined;
+  try {
+    schedule = await getNextScheduledCheckin(env.CHECKIN_DB);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "schedule_lookup_failed", error: safeError(error) }));
+  }
+
   const report: RunReport = {
     ok: results.every((result) => result.checkin.status !== "failed" && result.checkin.status !== "expired"),
     trigger,
     startedAt: new Date().toISOString(),
-    schedule: await getNextScheduledCheckin(env.CHECKIN_DB),
+    schedule,
     summary: summarizeResults(results),
     results,
     notifications: [],
@@ -127,7 +155,10 @@ async function executeRun(
     }
   };
 
-  await recordSuccessfulCheckins(env.CHECKIN_DB, results, trigger, report.startedAt);
+  // Status-only queries must never write fake "success" rows into the checkin log.
+  if (!statusOnly) {
+    await recordSuccessfulCheckins(env.CHECKIN_DB, results, trigger, report.startedAt);
+  }
 
   if (notify) {
     report.notifications = await sendEnabledNotifications(report, { channels: config.notifications });
@@ -153,15 +184,6 @@ function summarizeNotifications(configured: number, notifications: RunReport["no
     succeeded: notifications.filter((notification) => notification.ok).length,
     failed: notifications.filter((notification) => !notification.ok).length
   };
-}
-
-async function statusOnlyFetcher(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  if (typeof input === "string" && input.endsWith("/api/user/checkin")) {
-    return new Response(JSON.stringify({ code: 0, message: "Status only" }), {
-      headers: { "Content-Type": "application/json" }
-    });
-  }
-  return fetch(input, init);
 }
 
 async function requireAdmin(request: Request, env: EnvLike): Promise<Response | undefined> {

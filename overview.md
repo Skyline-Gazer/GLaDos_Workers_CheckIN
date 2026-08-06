@@ -27,3 +27,18 @@
 
 - Commit: `38ea481` → pushed to `main`
 - 变更: 370 行新增, 345 行删除
+
+## 2026-08-06 审计与修复
+
+对项目做了一次完整代码审计，修复了 4 个高优先级 Bug 并强化 Cookie 有效性检测，同时同步更新了本文档与 README.md：
+
+| 改动 | 说明 |
+|------|------|
+| `/status` 不再写假日志 | 移除 `statusOnlyFetcher`，新增独立的 `runAccountsStatusOnly`，纯查询不签到、不写 D1 |
+| Cookie 有效性检测 | 新增 `classifyAccountValidity`，基于状态接口的 HTTP/`code`/message/有效数据综合判定 有效/失效/无法确认 |
+| 定时任务失败重试 | 仅无临时性失败（`summary.failed === 0`）才标记当天已执行；5xx/429 由下个 Cron 重试，Cookie 失效视为终态 |
+| D1 调度表降级 | `getNextScheduledCheckin` / `shouldRunScheduledCheckin` 包 try/catch，D1 异常不再阻断签到与落库 |
+| 状态查询失败不丢结果 | `checkAccountStatus` 调用包 try/catch，保留已成功的签到结果 |
+| 死配置清理 | 移除 `AppConfig.adminUser / adminToken / notifyOnStatusOnly` |
+
+验证：`npm run type-check` 通过，`npm test` 46 个测试全部通过。

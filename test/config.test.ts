@@ -10,8 +10,6 @@ describe("parseConfig", () => {
     expect(config.accounts).toEqual([{ name: "main", cookie: "koa:sess=abc; koa:sess.sig=def" }]);
     expect(config.checkinConcurrency).toBe(2);
     expect(config.checkinRetries).toBe(3);
-    expect(config.notifyOnStatusOnly).toBe(false);
-    expect(config.adminUser).toBe("admin");
   });
 
   it("rejects missing, malformed, empty, and password-style account configuration", () => {
@@ -38,8 +36,6 @@ describe("parseConfig", () => {
 
     expect(config.checkinConcurrency).toBe(5);
     expect(config.checkinRetries).toBe(4);
-    expect(config.adminUser).toBe("owner");
-    expect(config.notifyOnStatusOnly).toBe(true);
     expect(config.notifications.map((channel) => channel.channel)).toEqual(["dingtalk", "telegram", "feishu"]);
   });
 });
