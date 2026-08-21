@@ -252,8 +252,7 @@ describe("worker routes", () => {
   });
 
   it("reports expired cookies in status-only queries", async () => {
-    const fetcher = vi
-      .spyOn(globalThis, "fetch")
+    vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }))
       .mockResolvedValueOnce(jsonResponse({ code: 40300, message: "no login" }));
 

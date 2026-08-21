@@ -6,6 +6,7 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint .",
     "type-check": "tsc --noEmit",
     "cf:types": "wrangler types",
     "db:prepare": "node scripts/prepare-d1.mjs",
@@ -15,7 +16,11 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.16.10",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "globals": "^17.11.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.67.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.18.0"
   }
