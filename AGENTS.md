@@ -13,11 +13,13 @@ GLaDOS Workers Check-IN —— 部署在 Cloudflare Workers 上的 GLaDOS 自动
 ├── test/                 # Vitest 测试
 ├── migrations/           # D1 SQL 迁移
 ├── scripts/              # D1 配置与迁移脚本
-├── .github/workflows/    # CI/CD（部署到 Cloudflare）
+├── .github/workflows/    # CI/CD（测试 + 部署到 Cloudflare）
 ├── docs/                 # 文档与参考材料
-│   ├── overview.md       # 开发记录 / 变更日志（README 重写、代码审计等历史说明）
+│   ├── CHANGELOG.md      # 变更日志（README 重写、代码审计等历史记录）
 │   └── reference/        # 参考实现，仅供阅读，不属于当前架构
 │       └── glados_checkin_ql.js  # 青龙面板版签到脚本（第三方参考实现）
+├── CONTRIBUTING.md       # 贡献指南（人类协作者版规范）
+├── LICENSE               # MIT License
 ├── wrangler.jsonc        # Wrangler 配置
 └── worker-configuration.d.ts  # wrangler types 自动生成
 ```
