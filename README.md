@@ -38,7 +38,7 @@
 Cloudflare Cron（每 30 分钟唤醒一次）
   → 触发 Worker
   → Worker 读取或生成当天随机目标时间
-  → Worker 用你提供的 Cookie 向 glados.rocks 发签到请求
+  → Worker 用你提供的 Cookie 向 glados.one 发签到请求
   → 签到结果写入 D1 数据库
   → （可选）通过钉钉/Telegram/飞书推送结果
 ```
@@ -73,7 +73,7 @@ Worker 会额外调用 GLaDOS 状态接口来**检测 Cookie 有效性**：综�
 
 ### 2.1 登录 GLaDOS
 
-在浏览器中打开 [https://glados.rocks](https://glados.rocks) 并登录。
+在浏览器中打开 [https://glados.one](https://glados.one) 并登录。
 
 ### 2.2 打开开发者工具
 
@@ -87,9 +87,9 @@ Worker 会额外调用 GLaDOS 状态接口来**检测 Cookie 有效性**：综�
 
 按 `F5` 或 `Cmd+R` 刷新页面，确保 Network 面板捕获到请求。
 
-### 2.5 找到发往 glados.rocks 的请求
+### 2.5 找到签到请求
 
-在 Network 面板的筛选框中输入 `glados.rocks`，任意选择一个请求点击。
+在 Network 面板的筛选框中输入 `checkin`，选择 `/api/user/checkin` 请求。
 
 ### 2.6 复制 Cookie
 
@@ -101,7 +101,7 @@ Worker 会额外调用 GLaDOS 状态接口来**检测 Cookie 有效性**：综�
 Cookie 示例（你的实际 Cookie 会比这个长）：
 
 ```text
-koa:sess=eyJ...很长一串;koa:sess.sig=另...一串签名
+gld:sess=eyJ...很长一串;gld:sess.sig=另...一串签名
 ```
 
 > **注意**：Cookie 是敏感信息。不要在公共场合分享，不要截图发到群里。
@@ -114,11 +114,11 @@ koa:sess=eyJ...很长一串;koa:sess.sig=另...一串签名
 [
   {
     "name": "主号",
-    "cookie": "koa:sess=主号SESSION;koa:sess.sig=主号SIGNATURE"
+    "cookie": "gld:sess=主号SESSION;gld:sess.sig=主号SIGNATURE"
   },
   {
     "name": "小号",
-    "cookie": "koa:sess=小号SESSION;koa:sess.sig=小号SIGNATURE"
+    "cookie": "gld:sess=小号SESSION;gld:sess.sig=小号SIGNATURE"
   }
 ]
 ```
@@ -272,7 +272,7 @@ openssl rand -hex 20
 3. Value 粘贴第二步准备的 JSON：
 
 ```json
-[{"name":"主号","cookie":"koa:sess=你的SESSION;koa:sess.sig=你的SIGNATURE"}]
+[{"name":"主号","cookie":"gld:sess=你的SESSION;gld:sess.sig=你的SIGNATURE"}]
 ```
 
 > **Value 必须是一个合法的 JSON 数组**。即使只有一个账号，也不能省略最外层的 `[...]`。建议先在本地用 [JSONLint](https://jsonlint.com) 验证格式。
@@ -501,7 +501,7 @@ Worker 启动时找不到账号配置。
 
 通知或响应显示 Cookie 已失效。
 
-**处理**：重新登录 GLaDOS，按第二步获取新的 Cookie，更新 Cloudflare 里的 `GLADOS_ACCOUNTS`。然后可以手动触发一次 `/test` 验证新 Cookie 是否生效。
+**处理**：重新登录 `glados.one`，按第二步从 `/api/user/checkin` 请求中获取同时包含 `gld:sess` 和 `gld:sess.sig` 的完整 Cookie，更新 Cloudflare 里的 `GLADOS_ACCOUNTS`。旧版 `koa:sess` Cookie 已失效。然后可以手动触发一次 `/test` 验证新 Cookie 是否生效。
 
 也可以用 `GET /status` 快速验证：Cookie 有效时账号显示「成功 / Cookie 有效」并带出剩余天数与 Points；Cookie 失效时显示「Cookie 失效」；若状态接口无有效数据则显示「无法确认 Cookie 状态」。
 

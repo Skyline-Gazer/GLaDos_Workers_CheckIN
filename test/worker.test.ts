@@ -139,8 +139,8 @@ describe("worker routes", () => {
     expect(body.results?.[0]?.accountStatus?.leftDays).toBe("30");
     expect(body.results?.[0]?.accountStatus?.points).toBe("66.6");
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://glados.rocks/api/user/status");
-    expect(String(fetcher.mock.calls[1]?.[0])).toBe("https://glados.rocks/api/user/points");
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://glados.one/api/user/status");
+    expect(String(fetcher.mock.calls[1]?.[0])).toBe("https://glados.one/api/user/points");
   });
 
   it("includes the next random schedule in run responses when D1 is enabled", async () => {
