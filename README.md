@@ -1,4 +1,13 @@
-# GLaDOS Workers Check-In
+# GLaDOS Workers Check-In（停止维护）
+
+> [!WARNING]
+> **本项目已停止维护，并计划归档。请勿再将它用于 GLaDOS 自动签到。**
+>
+> 2026-09-29 实测：Cloudflare Worker 可以正常查询账号状态和积分，但调用签到接口时会收到 HTTP 200 及 `Automated check-in detected. Please sign in again to continue.`，签到实际失败，并可能导致当前登录 Cookie 需要重新获取。
+>
+> 现有证据指向 Cloudflare 数据中心出口或请求指纹触发了 GLaDOS 的自动化检测；具体判定规则无法从客户端确认。更新 Cookie、域名和常见浏览器请求头后仍不能可靠签到，因此当前架构已无法完成项目的核心目标。
+>
+> 已部署的用户应停用 Cron 或删除 Worker，避免反复触发检测。若仍需签到，请改用本地或青龙等具备稳定可信网络出口的方案，并遵守 GLaDOS 的服务规则。下方内容仅作为历史部署文档保留。
 
 > 在 Cloudflare Workers 上运行 GLaDOS 自动签到，支持多账号、三种通知渠道（钉钉/Telegram/飞书）、D1 日志持久化。
 > 部署后无需服务器，免费额度完全覆盖日常签到。
