@@ -1,19 +1,19 @@
 import type { AccountConfig, AccountRunResult, CheckinStatus, ExchangePlan, Fetcher, PointHistoryItem } from "./types";
 
-const CHECKIN_URL = "https://glados.rocks/api/user/checkin";
-const STATUS_URL = "https://glados.rocks/api/user/status";
-const POINTS_URL = "https://glados.rocks/api/user/points";
+const GLADOS_BASE_URL = "https://glados.one";
+const CHECKIN_URL = `${GLADOS_BASE_URL}/api/user/checkin`;
+const STATUS_URL = `${GLADOS_BASE_URL}/api/user/status`;
+const POINTS_URL = `${GLADOS_BASE_URL}/api/user/points`;
 const USER_AGENT =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
 
 export function buildGladosHeaders(cookie: string): Record<string, string> {
   return {
     Accept: "application/json, text/plain, */*",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
     "Content-Type": "application/json;charset=UTF-8",
     Cookie: cookie,
-    Origin: "https://glados.rocks",
-    Referer: "https://glados.rocks/console/checkin",
+    Origin: GLADOS_BASE_URL,
     "User-Agent": USER_AGENT
   };
 }
@@ -21,9 +21,9 @@ export function buildGladosHeaders(cookie: string): Record<string, string> {
 export function classifyCheckinResponse(httpStatus: number, data: unknown): AccountRunResult["checkin"] {
   const message = safeMessage(data);
   const lowerMessage = message.toLowerCase();
-  const code = isRecord(data) ? data.code : undefined;
+  const code = extractResponseCode(data);
 
-  if (httpStatus === 401 || httpStatus === 403 || lowerMessage.includes("login") || lowerMessage.includes("unauthorized")) {
+  if (httpStatus === 401 || code === -2 || isLoginRequiredMessage(lowerMessage)) {
     return { status: "expired", message: message || `Cookie expired (HTTP ${httpStatus})`, httpStatus };
   }
 
@@ -72,7 +72,7 @@ export async function checkAccountStatus(
     return {
       ...base,
       cookieValid: false,
-      message: safeMessage(data) || `Cookie 已失效（HTTP ${response.status}）`,
+      message: cookieInvalidMessage(account.cookie, safeMessage(data)),
       httpStatus: response.status
     };
   }
@@ -94,15 +94,15 @@ export async function checkAccountStatus(
 }
 
 function classifyAccountValidity(httpStatus: number, data: unknown): "valid" | "invalid" | "unknown" {
-  if (httpStatus === 401 || httpStatus === 403 || httpStatus === 407) {
+  if (httpStatus === 401) {
     return "invalid";
   }
   const message = safeMessage(data).toLowerCase();
-  if (/(login|unauthorized|forbidden|no permission|invalid|expired)/.test(message)) {
+  if (isLoginRequiredMessage(message)) {
     return "invalid";
   }
   const code = extractResponseCode(data);
-  if (code !== undefined && code !== 0) {
+  if (code === -2) {
     return "invalid";
   }
   if (
@@ -168,6 +168,9 @@ export async function performAccountRun(
       });
       const data = await readJson(response);
       checkin = classifyCheckinResponse(response.status, data);
+      if (checkin.status === "expired") {
+        checkin.message = cookieInvalidMessage(account.cookie, checkin.message);
+      }
 
       if (!shouldRetry(checkin.status, response.status) || attempt === retries) {
         break;
@@ -444,6 +447,18 @@ function safeMessage(data: unknown): string {
     return "";
   }
   return data.message.slice(0, 160);
+}
+
+function isLoginRequiredMessage(message: string): boolean {
+  return /(login|sign\s*in|unauthorized|no permission|invalid|expired|没有权限)/i.test(message);
+}
+
+function cookieInvalidMessage(cookie: string, serverMessage: string): string {
+  const guidance =
+    cookie.includes("koa:sess=") && !cookie.includes("gld:sess=")
+      ? "旧版 koa:sess 已失效；请重新登录 glados.one，更新 gld:sess 和 gld:sess.sig"
+      : "登录 Cookie 无效；请重新登录 glados.one，完整更新 gld:sess 和 gld:sess.sig";
+  return serverMessage ? `${guidance}（${serverMessage}）` : guidance;
 }
 
 function safeError(error: unknown): string {

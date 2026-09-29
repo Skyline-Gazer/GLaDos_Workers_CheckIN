@@ -10,7 +10,7 @@ import {
 } from "../src/glados";
 import type { AccountConfig } from "../src/types";
 
-const account: AccountConfig = { name: "main", cookie: "koa:sess=abc; koa:sess.sig=def" };
+const account: AccountConfig = { name: "main", cookie: "gld:sess=abc; gld:sess.sig=def" };
 
 describe("buildGladosHeaders", () => {
   it("uses browser-like headers with the account cookie and no fake authorization", () => {
@@ -18,10 +18,9 @@ describe("buildGladosHeaders", () => {
 
     expect(headers["User-Agent"]).toContain("Chrome");
     expect(headers["Accept"]).toBe("application/json, text/plain, */*");
-    expect(headers["Accept-Language"]).toBe("zh-CN,zh;q=0.9,en;q=0.8");
+    expect(headers["Accept-Language"]).toBe("zh-CN,zh;q=0.9");
     expect(headers["Content-Type"]).toBe("application/json;charset=UTF-8");
-    expect(headers["Origin"]).toBe("https://glados.rocks");
-    expect(headers["Referer"]).toBe("https://glados.rocks/console/checkin");
+    expect(headers["Origin"]).toBe("https://glados.one");
     expect(headers["Cookie"]).toBe(account.cookie);
     expect(headers).not.toHaveProperty("Authorization");
   });
@@ -35,8 +34,12 @@ describe("classifyCheckinResponse", () => {
     expect(classifyCheckinResponse(200, { code: 1, message: "Checkin Repeats! Please Try Tomorrow" })).toMatchObject({
       status: "already_checked_in"
     });
-    expect(classifyCheckinResponse(403, { message: "Forbidden" })).toMatchObject({ status: "expired" });
+    expect(classifyCheckinResponse(403, { message: "Forbidden" })).toMatchObject({ status: "failed" });
     expect(classifyCheckinResponse(200, { message: "Please login first" })).toMatchObject({ status: "expired" });
+    expect(classifyCheckinResponse(200, { code: -2, message: "没有权限" })).toMatchObject({ status: "expired" });
+    expect(classifyCheckinResponse(200, { message: "Automated check-in detected. Please sign in again to continue." })).toMatchObject({
+      status: "expired"
+    });
     expect(classifyCheckinResponse(200, { message: "Something else" })).toMatchObject({ status: "failed" });
   });
 });
@@ -91,12 +94,12 @@ describe("GLaDOS account operations", () => {
     });
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
-      "https://glados.rocks/api/user/status",
+      "https://glados.one/api/user/status",
       expect.objectContaining({ method: "GET", headers: expect.objectContaining({ Cookie: account.cookie }) })
     );
     expect(fetcher).toHaveBeenNthCalledWith(
       2,
-      "https://glados.rocks/api/user/points",
+      "https://glados.one/api/user/points",
       expect.objectContaining({ method: "GET", headers: expect.objectContaining({ Cookie: account.cookie }) })
     );
   });
@@ -116,14 +119,25 @@ describe("GLaDOS account operations", () => {
     expect(result.accountStatus?.leftDays).toBe("20");
     expect(result.accountStatus?.points).toBe("100");
     expect(fetcher).toHaveBeenCalledTimes(4);
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "https://glados.one/api/user/checkin",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ token: "glados.one" }),
+        headers: expect.objectContaining({ Origin: "https://glados.one", Cookie: account.cookie })
+      })
+    );
   });
 
-  it("does not retry expired cookies", async () => {
-    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ message: "Forbidden" }, 403));
+  it("does not retry expired cookies and tells users which cookies to replace", async () => {
+    const oldAccount = { ...account, cookie: "koa:sess=abc; koa:sess.sig=def" };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse({ code: -2, message: "没有权限" }));
 
-    const result = await performAccountRun(account, { retries: 3, fetcher, sleep: async () => undefined });
+    const result = await performAccountRun(oldAccount, { retries: 3, fetcher, sleep: async () => undefined });
 
     expect(result.checkin.status).toBe("expired");
+    expect(result.checkin.message).toContain("gld:sess 和 gld:sess.sig");
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
@@ -158,12 +172,12 @@ describe("cookie validity detection", () => {
     expect(status?.httpStatus).toBe(200);
   });
 
-  it("marks cookies invalid on HTTP 403 even with an empty body", async () => {
+  it("does not mistake an HTTP 403 access rejection for an expired cookie", async () => {
     const fetcher = vi.fn().mockResolvedValueOnce(jsonResponse({}, 403));
 
     const status = await checkAccountStatus(account, fetcher);
 
-    expect(status?.cookieValid).toBe(false);
+    expect(status?.cookieValid).toBeUndefined();
   });
 
   it("marks cookies valid when the status API returns left days", async () => {
@@ -217,8 +231,8 @@ describe("status-only account runs", () => {
     expect(results[0]?.checkin.status).toBe("expired");
     expect(results[0]?.checkin.message).toContain("no login");
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://glados.rocks/api/user/status");
-    expect(String(fetcher.mock.calls[1]?.[0])).toBe("https://glados.rocks/api/user/points");
+    expect(String(fetcher.mock.calls[0]?.[0])).toBe("https://glados.one/api/user/status");
+    expect(String(fetcher.mock.calls[1]?.[0])).toBe("https://glados.one/api/user/points");
   });
 
   it("reports success for valid cookies", async () => {
